@@ -7,6 +7,8 @@ import typing as t
 from . import nodes
 from .compiler import CodeGenerator
 from .compiler import Frame
+from .idtracking import TrackingSymbols
+from .idtracking import VAR_LOAD_RESOLVE
 
 if t.TYPE_CHECKING:
     from .environment import Environment
@@ -14,6 +16,8 @@ if t.TYPE_CHECKING:
 
 class TrackingCodeGenerator(CodeGenerator):
     """We abuse the code generator for introspection."""
+
+    symbols_class = TrackingSymbols
 
     def __init__(self, environment: "Environment") -> None:
         super().__init__(environment, "<introspection>", "<introspection>")
@@ -26,16 +30,22 @@ class TrackingCodeGenerator(CodeGenerator):
         """Remember all undeclared identifiers."""
         super().enter_frame(frame)
 
-        for _, (action, param) in frame.symbols.loads.items():
-            if action == "resolve" and param not in self.environment.globals:
+        symbols = t.cast(TrackingSymbols, frame.symbols)
+        locally_defined = symbols.definite_stores - symbols.early_reads
+
+        for action, param in symbols.loads.values():
+            if (
+                action == VAR_LOAD_RESOLVE
+                and param not in self.environment.globals
+                and param not in locally_defined
+            ):
                 self.undeclared_identifiers.add(param)
 
 
 def find_undeclared_variables(ast: nodes.Template) -> t.Set[str]:
-    """Returns a set of all variables in the AST that will be looked up from
-    the context at runtime.  Because at compile time it's not known which
-    variables will be used depending on the path the execution takes at
-    runtime, all variables are returned.
+    """Returns the names in the AST that may need values from the context.
+    Since the template's runtime path is unknown, variables needed on any
+    possible path are included.
 
     >>> from jinja2 import Environment, meta
     >>> env = Environment()

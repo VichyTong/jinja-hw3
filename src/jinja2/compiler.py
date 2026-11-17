@@ -170,6 +170,8 @@ class Frame:
         eval_ctx: EvalContext,
         parent: t.Optional["Frame"] = None,
         level: t.Optional[int] = None,
+        *,
+        symbols_class: t.Type[Symbols] = Symbols,
     ) -> None:
         self.eval_ctx = eval_ctx
 
@@ -177,7 +179,7 @@ class Frame:
         self.parent = parent
 
         if parent is None:
-            self.symbols = Symbols(level=level)
+            self.symbols = symbols_class(level=level)
 
             # in some dynamic inheritance situations the compiler needs to add
             # write tests around output statements.
@@ -193,7 +195,7 @@ class Frame:
             self.block: t.Optional[str] = None
 
         else:
-            self.symbols = Symbols(parent.symbols, level=level)
+            self.symbols = type(parent.symbols)(parent.symbols, level=level)
             self.require_output_check = parent.require_output_check
             self.buffer = parent.buffer
             self.block = parent.block
@@ -226,7 +228,11 @@ class Frame:
     def inner(self, isolated: bool = False) -> "Frame":
         """Return an inner frame."""
         if isolated:
-            return Frame(self.eval_ctx, level=self.symbols.level + 1)
+            return Frame(
+                self.eval_ctx,
+                level=self.symbols.level + 1,
+                symbols_class=type(self.symbols),
+            )
         return Frame(self.eval_ctx, self)
 
     def soft(self) -> "te.Self":
@@ -298,6 +304,8 @@ class CompilerExit(Exception):
 
 
 class CodeGenerator(NodeVisitor):
+    symbols_class: t.Type[Symbols] = Symbols
+
     def __init__(
         self,
         environment: "Environment",
@@ -878,7 +886,7 @@ class CodeGenerator(NodeVisitor):
         self.write_commons()
 
         # process the root
-        frame = Frame(eval_ctx)
+        frame = Frame(eval_ctx, symbols_class=self.symbols_class)
         if "self" in find_undeclared(node.body, ("self",)):
             ref = frame.symbols.declare_parameter("self")
             self.writeline(f"{ref} = TemplateReference(context)")
@@ -925,7 +933,7 @@ class CodeGenerator(NodeVisitor):
             # It's important that we do not make this frame a child of the
             # toplevel template.  This would cause a variety of
             # interesting issues with identifier tracking.
-            block_frame = Frame(eval_ctx)
+            block_frame = Frame(eval_ctx, symbols_class=self.symbols_class)
             block_frame.block_frame = True
             undeclared = find_undeclared(block.body, ("self", "super"))
             if "self" in undeclared:

@@ -337,6 +337,13 @@ class TestIfCondition:
         tmpl = env.from_string("{% if true %}{% set foo = 1 %}{% endif %}{{ foo }}")
         assert tmpl.render() == "1"
 
+    def test_unassigned_branch_preserves_context_value(self, env):
+        tmpl = env.from_string(
+            "{% if ready %}{% set value = 1 %}{% endif %}{{ value }}"
+        )
+        assert tmpl.render(ready=True, value=42) == "1"
+        assert tmpl.render(ready=False, value=42) == "42"
+
 
 class TestMacros:
     def test_simple(self, env_trim):

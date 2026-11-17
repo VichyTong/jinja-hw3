@@ -188,6 +188,92 @@ class TestMeta:
         )
         assert meta.find_undeclared_variables(ast) == {"control"}
 
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            pytest.param(
+                "{% if ready %}{% set value = 1 %}"
+                "{% else %}{% set value = 2 %}{% endif %}{{ value }}",
+                {"ready"},
+                id="if-else",
+            ),
+            pytest.param(
+                "{% if ready %}{% set value = 1 %}"
+                "{% elif second %}{% set value = 2 %}"
+                "{% elif third %}{% set value = 3 %}"
+                "{% else %}{% set value = 4 %}{% endif %}{{ value }}",
+                {"ready", "second", "third"},
+                id="multiple-elif",
+            ),
+            pytest.param(
+                "{% if ready %}{% set value = 1 %}{% endif %}{{ value }}",
+                {"ready", "value"},
+                id="no-else",
+            ),
+            pytest.param(
+                "{% if ready %}{% set value = 1 %}"
+                "{% elif second %}{% set value = 2 %}"
+                "{% elif third %}no assignment"
+                "{% else %}{% set value = 4 %}{% endif %}{{ value }}",
+                {"ready", "second", "third", "value"},
+                id="elif-without-assignment",
+            ),
+            pytest.param(
+                "{% if ready %}"
+                "{% if inner %}{% set value = 1 %}"
+                "{% else %}{% set value = 2 %}{% endif %}"
+                "{% else %}{% set value = 3 %}{% endif %}{{ value }}",
+                {"ready", "inner"},
+                id="nested-complete",
+            ),
+            pytest.param(
+                "{% if ready %}"
+                "{% if inner %}{% set value = 1 %}{% endif %}"
+                "{% else %}{% set value = 2 %}{% endif %}{{ value }}",
+                {"ready", "inner", "value"},
+                id="nested-partial",
+            ),
+            pytest.param(
+                "{% if ready %}"
+                "{% if inner %}{% set value = 1 %}{% endif %}{% set value = 2 %}"
+                "{% else %}{% set value = 3 %}{% endif %}{{ value }}",
+                {"ready", "inner"},
+                id="unconditional-store-after-nested-if",
+            ),
+            pytest.param(
+                "{% if ready %}{% set value = value + 1 %}"
+                "{% else %}{% set value = 2 %}{% endif %}{{ value }}",
+                {"ready", "value"},
+                id="read-on-assignment-rhs",
+            ),
+            pytest.param(
+                "{% if ready %}{% set value = 1 %}"
+                "{% elif value %}{% set value = 2 %}"
+                "{% else %}{% set value = 3 %}{% endif %}{{ value }}",
+                {"ready", "value"},
+                id="read-in-elif-condition",
+            ),
+            pytest.param(
+                "{% if ready %}{% set value = 1 %}"
+                "{% else %}{% set value = 2 %}{% endif %}"
+                "{% with %}{{ value }}{% endwith %}",
+                {"ready"},
+                id="inner-scope-read-after-assignment",
+            ),
+        ],
+    )
+    def test_undeclared_variables_follow_conditional_paths(self, env, source, expected):
+        assert meta.find_undeclared_variables(env.parse(source)) == expected
+
+    def test_undeclared_variable_read_in_inner_scope_before_assignment(self, env):
+        source = (
+            "{% with %}{{ value }}|{% endwith %}"
+            "{% if ready %}{% set value = 1 %}"
+            "{% else %}{% set value = 2 %}{% endif %}{{ value }}"
+        )
+        assert meta.find_undeclared_variables(env.parse(source)) == {"ready", "value"}
+        assert env.from_string(source).render(ready=True, value=42) == "42|1"
+
     def test_find_refererenced_templates(self, env):
         ast = env.parse('{% extends "layout.html" %}{% include helper %}')
         i = meta.find_referenced_templates(ast)

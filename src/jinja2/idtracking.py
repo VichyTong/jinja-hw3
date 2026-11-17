@@ -47,7 +47,7 @@ class Symbols:
         self.stores: t.Set[str] = set()
 
     def analyze_node(self, node: nodes.Node, **kwargs: t.Any) -> None:
-        visitor = RootVisitor(self)
+        visitor = RootVisitor(FrameSymbolVisitor(self))
         visitor.visit(node, **kwargs)
 
     def _define_ref(
@@ -172,8 +172,8 @@ class Symbols:
 
 
 class RootVisitor(NodeVisitor):
-    def __init__(self, symbols: "Symbols") -> None:
-        self.sym_visitor = FrameSymbolVisitor(symbols)
+    def __init__(self, sym_visitor: "FrameSymbolVisitor") -> None:
+        self.sym_visitor = sym_visitor
 
     def _simple_visit(self, node: nodes.Node, **kwargs: t.Any) -> None:
         for child in node.iter_child_nodes():
@@ -262,10 +262,12 @@ class FrameSymbolVisitor(NodeVisitor):
             self.symbols = original_symbols
             return rv
 
-        body_symbols = inner_visit(node.body)
-        elif_symbols = inner_visit(node.elif_)
-        else_symbols = inner_visit(node.else_ or ())
-        self.symbols.branch_update([body_symbols, elif_symbols, else_symbols])
+        self.symbols.branch_update(
+            [inner_visit(branch) for branch in self._if_branches(node)]
+        )
+
+    def _if_branches(self, node: nodes.If) -> t.Iterable[t.Iterable[nodes.Node]]:
+        return (node.body, node.elif_, node.else_ or ())
 
     def visit_Macro(self, node: nodes.Macro, **kwargs: t.Any) -> None:
         self.symbols.store(node.name)
@@ -316,3 +318,81 @@ class FrameSymbolVisitor(NodeVisitor):
 
     def visit_OverlayScope(self, node: nodes.OverlayScope, **kwargs: t.Any) -> None:
         """Do not visit into overlay scopes."""
+
+
+class TrackingSymbols(Symbols):
+    """Track assignments for meta analysis without changing runtime loads."""
+
+    def __init__(
+        self, parent: t.Optional[Symbols] = None, level: t.Optional[int] = None
+    ) -> None:
+        super().__init__(parent, level)
+        self.definite_stores: t.Set[str] = set()
+        self.early_reads: t.Set[str] = set()
+
+    def analyze_node(self, node: nodes.Node, **kwargs: t.Any) -> None:
+        RootVisitor(_TrackingFrameSymbolVisitor(self)).visit(node, **kwargs)
+
+    def copy(self) -> "te.Self":
+        rv = super().copy()
+        rv.definite_stores = self.definite_stores.copy()
+        rv.early_reads = self.early_reads.copy()
+        return rv
+
+    def store(self, name: str) -> None:
+        self.definite_stores.add(name)
+        super().store(name)
+
+    def declare_parameter(self, name: str) -> str:
+        self.definite_stores.add(name)
+        return super().declare_parameter(name)
+
+    def note_read(self, name: str) -> None:
+        if name not in self.definite_stores:
+            self.early_reads.add(name)
+
+    def load(self, name: str) -> None:
+        self.note_read(name)
+        super().load(name)
+
+    def branch_update(self, branch_symbols: t.Sequence[Symbols]) -> None:
+        super().branch_update(branch_symbols)
+        branches = t.cast("t.Sequence[TrackingSymbols]", branch_symbols)
+        self.definite_stores = set.intersection(
+            *(branch.definite_stores for branch in branches)
+        )
+
+        for branch in branches:
+            self.early_reads.update(branch.early_reads)
+
+
+class _TrackingFrameSymbolVisitor(FrameSymbolVisitor):
+    symbols: TrackingSymbols
+    _nested_scopes = (
+        nodes.AssignBlock,
+        nodes.CallBlock,
+        nodes.FilterBlock,
+        nodes.For,
+        nodes.Macro,
+        nodes.Scope,
+        nodes.With,
+    )
+
+    def _if_branches(self, node: nodes.If) -> t.Iterable[t.Iterable[nodes.Node]]:
+        yield node.body
+        for branch in node.elif_:
+            yield (branch.test, *branch.body)
+        # With no else body, the fallthrough path preserves the incoming stores.
+        yield node.else_ or ()
+
+    def visit(self, node: nodes.Node, *args: t.Any, **kwargs: t.Any) -> t.Any:
+        if isinstance(node, self._nested_scopes):
+            # An inner frame may read an outer name before the current frame
+            # assigns it. Keep those reads even if the name is later overwritten.
+            for ref in node.find_all((nodes.Name, nodes.NSRef)):
+                if isinstance(ref, nodes.NSRef) or (
+                    isinstance(ref, nodes.Name) and ref.ctx == "load"
+                ):
+                    self.symbols.note_read(ref.name)
+
+        return super().visit(node, *args, **kwargs)
