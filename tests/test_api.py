@@ -179,6 +179,15 @@ class TestMeta:
         x = meta.find_undeclared_variables(ast)
         assert x == {"foo"}
 
+    def test_undeclared_variables_with_assignment_in_every_branch(self, env):
+        ast = env.parse(
+            "{% if control == 'first' %}{% set output = 1 %}"
+            "{% elif control == 'second' %}{% set output = 2 %}"
+            "{% else %}{% set output = 3 %}{% endif %}"
+            "{{ output }}"
+        )
+        assert meta.find_undeclared_variables(ast) == {"control"}
+
     def test_find_refererenced_templates(self, env):
         ast = env.parse('{% extends "layout.html" %}{% include helper %}')
         i = meta.find_referenced_templates(ast)
